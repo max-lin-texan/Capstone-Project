@@ -1,4 +1,5 @@
 from pathlib import Path
+import pandas as pd
 from file_read import load_data
 
 DATA_DIR = Path.home() / "Capstone-Project" / "data"
@@ -7,6 +8,7 @@ MEDIAN_VARS = [
     "sao2", "heartrate", "respiration",
     "temperature", "gcs", "nibp_systolic", "nibp_diastolic", "nibp_mean",
 ]
+WINDOWS = [(0, 6), (6, 12), (12, 18)]
 
 # Physiologically plausible ranges (inclusive); temperature and gcs are already filtered in file_read
 VALID_RANGES = {
@@ -69,14 +71,36 @@ def median_in_window(df, start_h=0, end_h=6, p=True):
 
     return df_median
 
+def complete_patients(df_median, cols, p=True):
+    """Keep patients whose cols are non-missing in every window."""
+    ok = df_median[cols].notna().all(axis=1).groupby(df_median["patientunitstayid"]).transform("all")
+    df_complete = df_median[ok]
+    if p:
+        n = df_complete["patientunitstayid"].nunique()
+        print(f"Complete in all {len(WINDOWS)} windows ({len(cols)} variables): {n:,} patients")
+    return df_complete
+
 def data_preprocessing():
     df_sepsis_vitals = load_data(p=True)
     df_sepsis_vitals = clean_data(df_sepsis_vitals)
-    df_median = median_in_window(df_sepsis_vitals, 0, 6)
+
+    parts = []
+    for start_h, end_h in WINDOWS:
+        part = median_in_window(df_sepsis_vitals, start_h, end_h)
+        part.insert(1, "window", f"{start_h}-{end_h}")
+        parts.append(part)
+    df_median = (pd.concat(parts, ignore_index=True)
+                 .sort_values("patientunitstayid", kind="stable", ignore_index=True))
+
+    vars_nogcs = [v for v in MEDIAN_VARS if v != "gcs"]
+    df_median_complete = complete_patients(df_median, MEDIAN_VARS)
+    df_median_complete_nogcs = (complete_patients(df_median, vars_nogcs)
+                                .drop(columns=["gcs", "n_gcs"]))
+
     DATA_DIR.mkdir(exist_ok=True)
     df_median.to_csv(DATA_DIR / "df_median.csv", index=False)
-    df_median_complete = df_median.dropna(subset=MEDIAN_VARS)
     df_median_complete.to_csv(DATA_DIR / "df_median_complete.csv", index=False)
+    df_median_complete_nogcs.to_csv(DATA_DIR / "df_median_complete_nogcs.csv", index=False)
 
     return df_median
 
